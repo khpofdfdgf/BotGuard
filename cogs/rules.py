@@ -105,7 +105,7 @@ RULES_DATA = [
 ]
 
 PUNISHMENT_INFO = """
-**Hệ thống xử phạt leo thang:**
+**Hệ thống xử phạt leo thang cho Thành viên:**
 > ⚠️ Warn 1-2 → Cảnh cáo + DM
 > 🔇 Warn 3 → Mute **1 giờ**
 > 🔇 Warn 4 → Mute **2 giờ**
@@ -116,7 +116,7 @@ PUNISHMENT_INFO = """
 > 🔇 Warn 9 → Mute **72 giờ**
 > ⚖️ Warn 10+ → Mute **72 giờ** + Đề xuất **BAN** lên nhóm Staff để Admin duyệt
 
-Staff và Moderator có toàn quyền áp dụng hình thức kỷ luật phù hợp tùy mức độ nghiêm trọng.
+💡 Thành viên có thể dùng lệnh `/report @user <lý do>` để báo cáo vi phạm đến Ban Quản Trị.
 
 **Kháng cáo:** Dùng lệnh `/appeal` nếu bạn cho rằng mình bị xử oan.
 """
@@ -127,6 +127,7 @@ STAFF_RULES_DATA = [
         "rules": [
             "Không ban/kick/mute thành viên vì lý do cá nhân hoặc xích mích riêng tư.",
             "Phải có lý do chính đáng và bằng chứng (nếu cần) khi xử phạt. Dùng lệnh bot phải kèm theo lý do rõ ràng.",
+            "**Moderator không được tự ý Ban/Kick** thành viên. Phải dùng lệnh `/propose` để đề xuất lên nhóm Staff, chờ Admin duyệt.",
         ],
     },
     {
@@ -163,10 +164,18 @@ STAFF_RULES_DATA = [
 
 STAFF_PUNISHMENT_INFO = """
 **Hệ thống xử phạt dành cho Staff vi phạm:**
-> ⚠️ **Vi phạm lần 1:** Nhắc nhở nội bộ.
-> 🔻 **Vi phạm lần 2:** Tước quyền Moderator/Admin (hạ role) tạm thời hoặc vĩnh viễn tùy mức độ.
-> 🔨 **Vi phạm nghiêm trọng:** (Ban/kick hàng loạt không lý do, phá server) → Ban vĩnh viễn lập tức.
+> ⚠️ **Lần 1:** Nhắc nhở nội bộ.
+> ⚠️ **Lần 2:** Cảnh cáo chính thức + ghi nhận.
+> 🔻 **Lần 3:** Tước quyền Mod **1 giờ**.
+> 🔻 **Lần 4:** Tước quyền Mod **2 giờ**.
+> 🔻 **Lần 5:** Tước quyền Mod **7 giờ**.
+> 🔻 **Lần 6:** Tước quyền Mod **14 giờ**.
+> 🔻 **Lần 7:** Tước quyền Mod **28 giờ**.
+> 🔻 **Lần 8:** Tước quyền Mod **56 giờ**.
+> 🔻 **Lần 9:** Tước quyền Mod **72 giờ**.
+> 🔨 **Nghiêm trọng:** (Tự ý ban/kick hàng loạt, phá server, lạm quyền nghiêm trọng) → **Ban vĩnh viễn** lập tức, không kháng cáo.
 
+⚠️ Mod **không được tự ý Ban/Kick** thành viên. Phải dùng `/propose` để đề xuất lên nhóm Staff, Admin sẽ duyệt.
 Owner / Admin cấp cao sẽ xem xét và đưa ra quyết định dựa trên mức độ nghiêm trọng.
 """
 
@@ -285,18 +294,35 @@ class Rules(commands.Cog):
         await self._send_rules_to_channel(rules_ch, ctx.guild)
         await ctx.send(f"✅ Đã đăng nội quy vào {rules_ch.mention}!", ephemeral=True)
 
-    # ─── /poststaffrules (Admin only – đăng vào kênh hiện tại) ─────────────────────
-
     @commands.hybrid_command(
         name="poststaffrules",
-        description="[Admin] Đăng nội quy dành cho Staff"
+        description="[Admin] Đăng nội quy dành cho Staff vào kênh Nội quy"
     )
     async def poststaffrules(self, ctx: commands.Context) -> None:
         if not utils.is_mod(ctx.author):
             return await ctx.send("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
 
-        await self._send_staff_rules_to_channel(ctx.channel, ctx.guild)
-        await ctx.send("✅ Đã đăng nội quy staff vào kênh này!", ephemeral=True)
+        # Tìm kênh có tên "Nội quy"
+        rules_ch = None
+        for ch in ctx.guild.text_channels:
+            norm_name = utils.normalize_channel_name(ch.name)
+            if norm_name in ["noi quy", "nội quy"]:
+                rules_ch = ch
+                break
+
+        # Nếu không tìm thấy bằng tên, dùng rules_channel_id
+        if not rules_ch:
+            rules_ch = ctx.guild.get_channel(cfg.rules_channel_id)
+
+        if not rules_ch:
+            return await ctx.send(
+                "❌ Không tìm thấy kênh Nội quy. Vui lòng thiết lập kênh bằng `/config channel rules #kênh` hoặc tạo kênh tên 'Nội quy'.",
+                ephemeral=True,
+            )
+
+        # Gửi nội quy staff vào kênh rules_ch
+        await self._send_staff_rules_to_channel(rules_ch, ctx.guild)
+        await ctx.send(f"✅ Đã đăng nội quy staff vào kênh {rules_ch.mention}!", ephemeral=True)
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Rules(bot))

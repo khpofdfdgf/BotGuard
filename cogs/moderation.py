@@ -5,11 +5,11 @@ Hỗ trợ cả Slash Commands (/warn) và Prefix Commands (!warn)
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from config import cfg, COLOR_ERROR, COLOR_WARN, COLOR_INFO, COLOR_SUCCESS, COLOR_MOD
 import utils
@@ -163,6 +163,66 @@ class Moderation(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.check_suspensions.start()
+
+    def cog_unload(self) -> None:
+        self.check_suspensions.cancel()
+
+    @tasks.loop(seconds=10)
+    async def check_suspensions(self) -> None:
+        await self.bot.wait_until_ready()
+        suspensions = utils.load_suspensions()
+        if not suspensions:
+            return
+
+        now = datetime.now(timezone.utc)
+        to_remove = []
+        for user_id_str, info in list(suspensions.items()):
+            try:
+                expire_at = datetime.fromisoformat(info["expire_at"])
+            except Exception:
+                continue
+
+            if now >= expire_at:
+                to_remove.append(user_id_str)
+                guild_id = info["guild_id"]
+                role_id = info["role_id"]
+                channel_id = info["channel_id"]
+                user_id = int(user_id_str)
+
+                guild = self.bot.get_guild(guild_id)
+                if not guild:
+                    continue
+
+                role = guild.get_role(role_id)
+                member = None
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.HTTPException:
+                    pass
+
+                # Restore role programmatically
+                if member and role:
+                    try:
+                        await member.add_roles(role, reason="Hết thời gian phạt tước quyền Mod")
+                    except discord.Forbidden:
+                        pass
+
+                # Post restore command
+                channel = guild.get_channel(channel_id)
+                if not channel:
+                    channel = guild.get_channel(cfg.rules_channel_id)
+                if not channel:
+                    channel = guild.system_channel or next((ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages), None)
+
+                if channel and member and role:
+                    await channel.send(f"/role give {member.mention} {role.mention}")
+
+        if to_remove:
+            data = utils.load_suspensions()
+            for k in to_remove:
+                data.pop(k, None)
+            utils.save_suspensions(data)
 
     # ── Utility ──────────────────────────────────────────────────────────────
 
@@ -203,44 +263,129 @@ class Moderation(commands.Cog):
         if member == ctx.author:
             return await ctx.send("Bạn không thể tự cảnh cáo bản thân.")
 
+        is_staff = utils.is_mod(member)
+        active_suspensions = utils.load_suspensions()
+        if str(member.id) in active_suspensions:
+            is_staff = True
+            suspended_role_id = active_suspensions[str(member.id)]["role_id"]
+            role_to_revoke = ctx.guild.get_role(suspended_role_id)
+        else:
+            role_to_revoke = None
+            if is_staff:
+                if cfg.mod_role_id:
+                    mod_role = ctx.guild.get_role(cfg.mod_role_id)
+                    if mod_role and mod_role in member.roles:
+                        role_to_revoke = mod_role
+                if not role_to_revoke and cfg.admin_role_id:
+                    admin_role = ctx.guild.get_role(cfg.admin_role_id)
+                    if admin_role and admin_role in member.roles:
+                        role_to_revoke = admin_role
+                if not role_to_revoke:
+                    for r in reversed(member.roles):
+                        if r.is_default():
+                            continue
+                        if any(w in r.name.lower() for w in ["mod", "admin", "staff", "quản trị"]):
+                            role_to_revoke = r
+                            break
+                    if not role_to_revoke and len(member.roles) > 1:
+                        role_to_revoke = member.roles[-1]
+
         total = utils.add_warning(member.id, ctx.author.id, reason, ctx.guild.id)
         case_id = utils.log_case("WARN", member, ctx.author, reason)
-
-        # Escalation
-        wp = cfg.warn_punishments
-        punishment = wp.get(str(total), wp.get(str(max(int(k) for k in wp)), ["ban", 0]))
-        action_type, duration = punishment
         extra_note = ""
 
-        # Đề xuất xử phạt lên kênh staff nếu warn >= 10
-        if total >= 10:
-            success = await send_proposal(ctx.guild, member, "ban", f"Tích lũy {total} cảnh cáo", ctx.author.mention)
-            if success:
-                extra_note = f"\n⚠️ Đã đạt {total} cảnh cáo! Đã tự động đề xuất BAN lên kênh Staff."
-            else:
-                extra_note = f"\n⚠️ Đã đạt {total} cảnh cáo! (Chưa cấu hình Staff Channel để đề xuất BAN)"
+        if is_staff:
+            # Staff escalation
+            # 1: reminder, 2: official, 3-9: revoke 1h-72h, 10+: ban
+            staff_punishments = {
+                1: ("remind", 0),
+                2: ("official_warn", 0),
+                3: ("revoke_role", 60),
+                4: ("revoke_role", 120),
+                5: ("revoke_role", 420),
+                6: ("revoke_role", 840),
+                7: ("revoke_role", 1680),
+                8: ("revoke_role", 3360),
+                9: ("revoke_role", 4320),
+            }
+            punishment = staff_punishments.get(total, ("ban", 0) if total >= 10 else ("remind", 0))
+            action_type, duration = punishment
 
-        if action_type == "mute" and duration > 0:
-            dur_str = utils.duration_str(duration)
-            try:
-                timeout_td = discord.utils.utcnow() + timedelta(minutes=duration)
-                await member.timeout(timeout_td, reason=f"[Warn #{total}] {reason}")
-                extra_note = f"\n🔇 Đã tự động mute **{dur_str}** (warn #{total})"
-                utils.log_case("AUTO-MUTE", member, ctx.author, reason, duration)
-            except discord.Forbidden:
-                extra_note = "\n⚠️ Không đủ quyền để mute."
+            if action_type == "remind":
+                extra_note = f"\n⚠️ Nhắc nhở nội bộ (warn #{total})"
+            elif action_type == "official_warn":
+                extra_note = f"\n⚠️ Cảnh cáo chính thức + ghi nhận (warn #{total})"
+            elif action_type == "revoke_role":
+                dur_str = utils.duration_str(duration)
+                extra_note = f"\n🔻 Đã tự động tước quyền Mod **{dur_str}** (warn #{total})"
+                
+                if role_to_revoke:
+                    try:
+                        await member.remove_roles(role_to_revoke, reason=f"[Staff Warn #{total}] Tước quyền Mod")
+                    except discord.Forbidden:
+                        extra_note += "\n⚠️ Bot không đủ quyền để gỡ role staff."
+                    
+                    # Post command
+                    await ctx.send(f"/role remove {member.mention} {role_to_revoke.mention}")
+                    
+                    # Save suspension
+                    utils.add_suspension(
+                        user_id=member.id,
+                        guild_id=ctx.guild.id,
+                        role_id=role_to_revoke.id,
+                        duration_min=duration,
+                        channel_id=ctx.channel.id
+                    )
+                    utils.log_case("REVOKE-ROLE", member, ctx.author, f"Tước quyền Mod {dur_str}", duration)
+                else:
+                    extra_note += "\n⚠️ Không tìm thấy role staff để tước quyền."
 
-        elif action_type == "ban":
-            try:
-                await member.send("Bạn đã bị ban khỏi server do vi phạm nhiều lần.")
-            except Exception:
-                pass
-            try:
-                await ctx.guild.ban(member, reason=f"[Warn #{total}] {reason}")
-                extra_note = f"\n🔨 Đã tự động **ban** (warn #{total})"
-                utils.log_case("AUTO-BAN", member, ctx.author, reason)
-            except discord.Forbidden:
-                extra_note = "\n⚠️ Không đủ quyền để ban."
+            elif action_type == "ban":
+                try:
+                    await member.send("Bạn đã bị ban khỏi server do vi phạm nội quy staff nhiều lần.")
+                except Exception:
+                    pass
+                try:
+                    await ctx.guild.ban(member, reason=f"[Staff Warn #{total}] {reason}")
+                    extra_note = f"\n🔨 Đã tự động **ban** staff (warn #{total})"
+                    utils.log_case("AUTO-BAN", member, ctx.author, reason)
+                except discord.Forbidden:
+                    extra_note = "\n⚠️ Không đủ quyền để ban staff."
+        else:
+            # Member escalation
+            wp = cfg.warn_punishments
+            punishment = wp.get(str(total), wp.get(str(max(int(k) for k in wp)), ["ban", 0]))
+            action_type, duration = punishment
+
+            # Đề xuất xử phạt lên kênh staff nếu warn >= 10
+            if total >= 10:
+                success = await send_proposal(ctx.guild, member, "ban", f"Tích lũy {total} cảnh cáo", ctx.author.mention)
+                if success:
+                    extra_note = f"\n⚠️ Đã đạt {total} cảnh cáo! Đã tự động đề xuất BAN lên kênh Staff."
+                else:
+                    extra_note = f"\n⚠️ Đã đạt {total} cảnh cáo! (Chưa cấu hình Staff Channel để đề xuất BAN)"
+
+            if action_type == "mute" and duration > 0:
+                dur_str = utils.duration_str(duration)
+                try:
+                    timeout_td = discord.utils.utcnow() + timedelta(minutes=duration)
+                    await member.timeout(timeout_td, reason=f"[Warn #{total}] {reason}")
+                    extra_note = f"\n🔇 Đã tự động mute **{dur_str}** (warn #{total})"
+                    utils.log_case("AUTO-MUTE", member, ctx.author, reason, duration)
+                except discord.Forbidden:
+                    extra_note = "\n⚠️ Không đủ quyền để mute."
+
+            elif action_type == "ban":
+                try:
+                    await member.send("Bạn đã bị ban khỏi server do vi phạm nhiều lần.")
+                except Exception:
+                    pass
+                try:
+                    await ctx.guild.ban(member, reason=f"[Warn #{total}] {reason}")
+                    extra_note = f"\n🔨 Đã tự động **ban** (warn #{total})"
+                    utils.log_case("AUTO-BAN", member, ctx.author, reason)
+                except discord.Forbidden:
+                    extra_note = "\n⚠️ Không đủ quyền để ban."
 
         # Phản hồi
         embed = utils.mod_embed(

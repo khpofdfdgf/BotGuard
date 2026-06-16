@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import discord
 from config import cfg, DATA_DIR, WARNINGS_FILE, CASES_FILE
@@ -155,3 +155,39 @@ def duration_str(minutes: int) -> str:
         return f"{h} giờ" + (f" {m} phút" if m else "")
     d = minutes // 1440
     return f"{d} ngày"
+
+
+# ─── Staff Suspensions DB ───────────────────────────────────────────────────
+
+SUSPENSIONS_FILE = os.path.join(DATA_DIR, "suspensions.json")
+
+def load_suspensions() -> dict:
+    return load_json(SUSPENSIONS_FILE)
+
+def save_suspensions(data: dict) -> None:
+    save_json(SUSPENSIONS_FILE, data)
+
+def add_suspension(user_id: int, guild_id: int, role_id: int, duration_min: int, channel_id: int) -> None:
+    data = load_suspensions()
+    expire_at = (datetime.now(timezone.utc) + timedelta(minutes=duration_min)).isoformat()
+    data[str(user_id)] = {
+        "guild_id": guild_id,
+        "role_id": role_id,
+        "expire_at": expire_at,
+        "channel_id": channel_id
+    }
+    save_suspensions(data)
+
+def remove_suspension(user_id: int) -> dict | None:
+    data = load_suspensions()
+    val = data.pop(str(user_id), None)
+    if val:
+        save_suspensions(data)
+    return val
+
+def normalize_channel_name(name: str) -> str:
+    import unicodedata
+    name = name.lower().replace("-", " ").replace("_", " ").strip()
+    normalized = unicodedata.normalize('NFKD', name)
+    return "".join([c for c in normalized if not unicodedata.combining(c)])
+
