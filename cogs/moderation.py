@@ -181,10 +181,10 @@ class Moderation(commands.Cog):
             try:
                 expire_at = datetime.fromisoformat(info["expire_at"])
             except Exception:
+                to_remove.append(user_id_str)
                 continue
 
             if now >= expire_at:
-                to_remove.append(user_id_str)
                 guild_id = info["guild_id"]
                 role_id = info["role_id"]
                 channel_id = info["channel_id"]
@@ -192,31 +192,47 @@ class Moderation(commands.Cog):
 
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
+                    # Guild chưa sẵn sàng hoặc bot chưa load xong, giữ lại xử lý lần sau
                     continue
 
                 role = guild.get_role(role_id)
+                if not role:
+                    # Role đã bị xóa khỏi server, không thể cấp lại, xóa khỏi danh sách phạt
+                    to_remove.append(user_id_str)
+                    continue
+
                 member = None
                 try:
                     member = await guild.fetch_member(user_id)
                 except discord.HTTPException:
                     pass
 
-                # Restore role programmatically
-                if member and role:
-                    try:
-                        await member.add_roles(role, reason="Hết thời gian phạt tước quyền Mod")
-                    except discord.Forbidden:
-                        pass
+                if not member:
+                    # Thành viên đã rời server, không thể cấp role, xóa khỏi danh sách phạt
+                    to_remove.append(user_id_str)
+                    continue
 
-                # Post restore command
+                # Khôi phục role lập trình
+                try:
+                    await member.add_roles(role, reason="Hết thời gian phạt tước quyền Mod")
+                except discord.Forbidden:
+                    pass
+
+                # Gửi lệnh khôi phục vào box chat
                 channel = guild.get_channel(channel_id)
                 if not channel:
                     channel = guild.get_channel(cfg.rules_channel_id)
                 if not channel:
                     channel = guild.system_channel or next((ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages), None)
 
-                if channel and member and role:
-                    await channel.send(f"/role give {member.mention} {role.mention}")
+                if channel:
+                    try:
+                        await channel.send(f"/role give {member.mention} {role.mention}")
+                    except Exception:
+                        pass
+
+                # Khôi phục thành công, xóa khỏi danh sách phạt
+                to_remove.append(user_id_str)
 
         if to_remove:
             data = utils.load_suspensions()
@@ -739,6 +755,7 @@ class Moderation(commands.Cog):
     @commands.hybrid_command(name="baocao", description="Xem báo cáo thống kê các vi phạm trên server")
     @mod_only()
     async def baocao(self, ctx: commands.Context) -> None:
+        await ctx.defer()
         cases = utils.load_json(utils.CASES_FILE)
         if not cases:
             return await ctx.send("📋 Chưa có dữ liệu xử phạt nào để báo cáo.")
