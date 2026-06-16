@@ -194,33 +194,38 @@ class ModerationBot(commands.Bot):
 
         if isinstance(error, commands.CommandNotFound):
             return
+
+        embed = None
         if isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(
-                embed=discord.Embed(
-                    title="❌ Thiếu tham số",
-                    description=f"Thiếu: `{error.param.name}`\nDùng `{cfg.bot_prefix}help {ctx.command}` để xem hướng dẫn.",
-                    color=COLOR_ERROR,
-                )
+            embed = discord.Embed(
+                title="❌ Thiếu tham số",
+                description=f"Thiếu: `{error.param.name}`\nDùng `{cfg.bot_prefix}help {ctx.command}` để xem hướng dẫn.",
+                color=COLOR_ERROR,
             )
         elif isinstance(error, (commands.MemberNotFound, commands.UserNotFound, commands.BadArgument)):
-            await ctx.send(
-                embed=discord.Embed(
-                    title="❌ Không tìm thấy thành viên",
-                    description="Vui lòng @mention hoặc nhập ID / Username chính xác của thành viên.",
-                    color=COLOR_ERROR,
-                )
+            embed = discord.Embed(
+                title="❌ Không tìm thấy thành viên",
+                description="Vui lòng @mention hoặc nhập ID / Username chính xác của thành viên.",
+                color=COLOR_ERROR,
             )
         elif isinstance(error, commands.CheckFailure):
             pass
         else:
             log.error(f"Command error in {ctx.command}: {error}")
-            await ctx.send(
-                embed=discord.Embed(
-                    title="❌ Lỗi",
-                    description=f"Đã xảy ra lỗi: `{error}`",
-                    color=COLOR_ERROR,
-                )
+            embed = discord.Embed(
+                title="❌ Lỗi",
+                description=f"Đã xảy ra lỗi: `{error}`",
+                color=COLOR_ERROR,
             )
+
+        if embed:
+            try:
+                await ctx.send(embed=embed)
+            except discord.HTTPException:
+                try:
+                    await ctx.channel.send(embed=embed)
+                except discord.HTTPException:
+                    pass
 
     # ─── Help command ────────────────────────────────────────────────────────
 

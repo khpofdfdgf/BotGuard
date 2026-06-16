@@ -278,6 +278,8 @@ class Rules(commands.Cog):
         if not utils.is_mod(ctx.author):
             return await ctx.send("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
 
+        await ctx.defer(ephemeral=True)
+
         rules_ch = ctx.guild.get_channel(cfg.rules_channel_id)
         if not rules_ch:
             return await ctx.send(
@@ -301,6 +303,8 @@ class Rules(commands.Cog):
     async def poststaffrules(self, ctx: commands.Context) -> None:
         if not utils.is_mod(ctx.author):
             return await ctx.send("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
+
+        await ctx.defer(ephemeral=True)
 
         # Tìm kênh có tên "Nội quy"
         rules_ch = None
