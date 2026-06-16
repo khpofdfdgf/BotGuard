@@ -325,8 +325,8 @@ class Moderation(commands.Cog):
                     except discord.Forbidden:
                         extra_note += "\n⚠️ Bot không đủ quyền để gỡ role staff."
                     
-                    # Post command
-                    await ctx.send(f"/role remove {member.mention} {role_to_revoke.mention}")
+                    # Post command to channel as a regular text message (to trigger external bots)
+                    await ctx.channel.send(f"/role remove {member.mention} {role_to_revoke.mention}")
                     
                     # Save suspension
                     utils.add_suspension(
