@@ -1,0 +1,12 @@
+# gitignore cho Discord Bot
+.env
+bot.log
+data/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+.venv/
+venv/
+*.docx
